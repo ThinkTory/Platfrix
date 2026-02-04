@@ -1,0 +1,13 @@
+name: Branch Name Check
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  check-branch-name:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate branch name
+        run: |
+          echo "${GITHUB_HEAD_REF}" | grep -E '^(feature|bugfix|hotfix|chore|docs|refactor|test)/[a-z0-9-]+$'
