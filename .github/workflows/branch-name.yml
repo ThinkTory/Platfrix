@@ -10,4 +10,11 @@ jobs:
     steps:
       - name: Validate branch name
         run: |
-          echo "${GITHUB_HEAD_REF}" | grep -E '^(feature|bugfix|hotfix|chore|docs|refactor|test)/[a-z0-9-]+$'
+          BRANCH="${GITHUB_HEAD_REF}"
+          # Allow main and dev branches
+          if [[ "$BRANCH" == "main" || "$BRANCH" == "dev" ]]; then
+            echo "✅ Branch '$BRANCH' is allowed"
+            exit 0
+          fi
+          # Check naming convention for other branches
+          echo "$BRANCH" | grep -E '^(feature|bugfix|hotfix|chore|docs|refactor|test)/[a-z0-9-]+$'
