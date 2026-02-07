@@ -98,14 +98,20 @@ export function getJenkinsUrl() {
 /**
  * Wait for Jenkins to be ready
  */
-async function waitForJenkins(maxAttempts = 60) {
-    console.log("   Waiting for Jenkins to start...");
+async function waitForJenkins(maxAttempts = 180) {
+    console.log("   Waiting for Jenkins to start (this may take a few minutes on first run)...");
 
     for (let i = 0; i < maxAttempts; i++) {
         try {
-            // Try to access Jenkins
-            const result = run("curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/login", process.cwd(), true);
-            if (result.includes("200") || result.includes("403")) {
+            // Try to access Jenkins - use PowerShell on Windows, curl elsewhere
+            let statusCode;
+            if (process.platform === "win32") {
+                const result = run("powershell -Command \"try { (Invoke-WebRequest -Uri http://localhost:8080/login -UseBasicParsing -TimeoutSec 2).StatusCode } catch { if ($_.Exception.Response) { $_.Exception.Response.StatusCode.value__ } else { 0 } }\"", process.cwd(), true);
+                statusCode = result.trim();
+            } else {
+                statusCode = run("curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/login", process.cwd(), true);
+            }
+            if (statusCode.includes("200") || statusCode.includes("403")) {
                 return true;
             }
         } catch {

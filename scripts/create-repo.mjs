@@ -5,7 +5,7 @@
  * 
  * Can be run standalone or imported by orchestrator
  */
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -76,7 +76,26 @@ export function ensureGitHubCLI() {
         run("gh auth status", process.cwd(), true);
     } catch {
         console.log("🔐 GitHub CLI not authenticated. Starting login...\n");
-        run("gh auth login", process.cwd());
+        console.log("   A new window will open for authentication. Complete the login there.\n");
+        if (process.platform === "win32") {
+            // On Windows, open a new console window for interactive login
+            spawnSync("cmd", ["/c", "start", "/wait", "cmd", "/c", "gh auth login"], {
+                stdio: "inherit",
+                shell: false
+            });
+        } else {
+            // On Unix, use spawn with inherited stdio
+            spawnSync("gh", ["auth", "login"], {
+                stdio: "inherit"
+            });
+        }
+        // Verify authentication succeeded
+        try {
+            run("gh auth status", process.cwd(), true);
+        } catch {
+            console.error("❌ GitHub authentication failed. Please try again.");
+            process.exit(1);
+        }
     }
 }
 
