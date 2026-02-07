@@ -21,5 +21,9 @@ credentials-binding
 # Build tools
 nodejs
 
+# Configuration as Code
+configuration-as-code
+
 # Notifications (optional)
 slack
+

@@ -29,6 +29,7 @@ import {
     startDockerDesktop,
     getJenkinsUrl as getLocalJenkinsUrl
 } from "./scripts/start-jenkins.mjs";
+import { setupJenkins } from "./scripts/setup-jenkins.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -138,6 +139,16 @@ async function main() {
         let outputDir = await question(rl, `\n📁 Output directory (${process.cwd()}): `);
         outputDir = outputDir.trim() || process.cwd();
 
+        // Docker Hub credentials (optional)
+        console.log("\n   🐳 Docker Hub credentials (for pushing images to Docker Hub)");
+        const setupDockerHub = await confirm(rl, "   Configure Docker Hub credentials?");
+        let dockerHubUsername = "";
+        let dockerHubPassword = "";
+        if (setupDockerHub) {
+            dockerHubUsername = (await question(rl, "   Docker Hub username: ")).trim();
+            dockerHubPassword = (await question(rl, "   Docker Hub password: ")).trim();
+        }
+
         // ─────────────────────────────────────────────────────────────
         // Summary and confirmation
         // ─────────────────────────────────────────────────────────────
@@ -198,16 +209,18 @@ async function main() {
         });
 
         // ─────────────────────────────────────────────────────────────
-        // Step 5: Setup webhook (note: localhost won't work for GitHub webhooks)
+        // Step 5: Configure Jenkins (credentials + pipeline job)
         // ─────────────────────────────────────────────────────────────
         console.log("\n\n┌─────────────────────────────────────────────────────────┐");
-        console.log("│  STEP 4/4: GitHub Webhook Info                          │");
+        console.log("│  STEP 4/4: Configuring Jenkins                          │");
         console.log("└─────────────────────────────────────────────────────────┘");
 
-        console.log("\n   ⚠️  Webhook requires public URL (localhost won't work)");
-        console.log("   📝 For local development, use ngrok to expose Jenkins:");
-        console.log("      ngrok http 8080");
-        console.log("   Then add webhook in GitHub repo settings manually.\n");
+        await setupJenkins({
+            repoName,
+            repoFullName: repoResult.repoFullName,
+            dockerHubUsername,
+            dockerHubPassword
+        });
 
         // ─────────────────────────────────────────────────────────────
         // Done!
@@ -222,33 +235,23 @@ async function main() {
    📋 Pipeline: Jenkinsfile added
 
    ────────────────────────────────────────────────────────────
-   NEXT STEPS:
+   EVERYTHING IS CONFIGURED! Here's what was set up:
    ────────────────────────────────────────────────────────────
 
-   1. Complete Jenkins Setup:
-      • Open ${jenkinsUrl} in your browser
-      • Use admin password: ${jenkinsResult.initialPassword || "(see earlier output)"}
-      • Install suggested plugins
-      • Create admin user
+   ✅ Jenkins running with pre-installed plugins
+   ✅ Admin user: admin / admin
+   ✅ Pipeline job "${repoName}" created
+   ${dockerHubUsername ? "✅ Docker Hub credentials configured" : "⚠️  Docker Hub credentials not configured (optional)"}
 
-   2. Add Docker Hub Credentials in Jenkins:
-      • Manage Jenkins → Credentials → Add Credentials
-      • ID: docker-hub-credentials
-      • Username/Password: Your Docker Hub login
+   ────────────────────────────────────────────────────────────
+   OPTIONAL - For Webhooks:
+   ────────────────────────────────────────────────────────────
+   • Install ngrok: https://ngrok.com
+   • Run: ngrok http 8080
+   • Add webhook in GitHub repo settings
 
-   3. Create Pipeline Job:
-      • New Item → Pipeline → Name: ${repoName}
-      • Build Triggers: GitHub hook trigger for GITScm polling
-      • Pipeline: Pipeline script from SCM
-      • SCM: Git → URL: https://github.com/${repoResult.repoFullName}
-      • Script Path: Jenkinsfile
-
-   4. For Webhooks (optional):
-      • Install ngrok: https://ngrok.com
-      • Run: ngrok http 8080
-      • Add webhook in GitHub using ngrok URL
-
-   5. Start developing:
+   ────────────────────────────────────────────────────────────
+   START DEVELOPING:
       cd "${repoResult.localDir}"
       npm install
       npm start
