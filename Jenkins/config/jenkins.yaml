@@ -19,6 +19,10 @@ unclassified:
     adminAddress: "admin@localhost"
 
 tool:
+  git:
+    installations:
+      - name: "Default"
+        home: "/usr/bin/git"
   nodejs:
     installations:
       - name: "NodeJS 20"

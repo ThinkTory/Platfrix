@@ -105,6 +105,45 @@ export function clearDockerHubCredentials() {
     return saveConfig(config);
 }
 
+/**
+ * Get GitHub credentials (for private repos)
+ */
+export function getGitHubCredentials() {
+    const config = loadConfig();
+    return {
+        username: config.githubUsername || "",
+        token: config.githubToken || ""
+    };
+}
+
+/**
+ * Save GitHub credentials
+ */
+export function saveGitHubCredentials(username, token) {
+    const config = loadConfig();
+    config.githubUsername = username;
+    config.githubToken = token;
+    return saveConfig(config);
+}
+
+/**
+ * Check if GitHub credentials are saved
+ */
+export function hasGitHubCredentials() {
+    const creds = getGitHubCredentials();
+    return !!(creds.username && creds.token);
+}
+
+/**
+ * Clear GitHub credentials
+ */
+export function clearGitHubCredentials() {
+    const config = loadConfig();
+    delete config.githubUsername;
+    delete config.githubToken;
+    return saveConfig(config);
+}
+
 // CLI commands if run directly
 const isMainModule = process.argv[1]?.includes("config");
 if (isMainModule) {

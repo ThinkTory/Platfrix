@@ -13,6 +13,7 @@
 import readline from "node:readline";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { execSync } from "node:child_process";
 
 // Import modular scripts
 import {
@@ -31,7 +32,14 @@ import {
 } from "./scripts/start-jenkins.mjs";
 import { setupJenkins } from "./scripts/setup-jenkins.mjs";
 import { setupNgrokAndWebhook } from "./scripts/setup-ngrok.mjs";
-import { getDockerHubCredentials, saveDockerHubCredentials, hasDockerHubCredentials } from "./scripts/config.mjs";
+import {
+    getDockerHubCredentials,
+    saveDockerHubCredentials,
+    hasDockerHubCredentials,
+    getGitHubCredentials,
+    saveGitHubCredentials,
+    hasGitHubCredentials
+} from "./scripts/config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -43,6 +51,15 @@ function question(rl, prompt) {
 async function confirm(rl, prompt) {
     const answer = await question(rl, `${prompt} (y/n): `);
     return answer.toLowerCase().startsWith("y");
+}
+
+function run(cmd, cwd, silent = false) {
+    return execSync(cmd, {
+        stdio: silent ? "pipe" : "inherit",
+        cwd,
+        shell: true,
+        encoding: "utf8"
+    });
 }
 
 async function selectFromList(rl, items, prompt) {
@@ -179,6 +196,29 @@ async function main() {
             }
         }
 
+        // GitHub credentials for private repos - use gh CLI token automatically
+        let githubUsername = "";
+        let githubToken = "";
+
+        if (isPrivate) {
+            console.log("\n   🔑 Getting GitHub credentials for Jenkins (private repo)...");
+
+            // Get username and token from gh CLI (already authenticated)
+            try {
+                githubUsername = run("gh api user --jq .login", process.cwd(), true).trim();
+                githubToken = run("gh auth token", process.cwd(), true).trim();
+
+                if (githubUsername && githubToken) {
+                    console.log(`   ✅ Using gh CLI credentials for: ${githubUsername}`);
+                } else {
+                    console.log("   ⚠️  Could not get GitHub token from gh CLI");
+                }
+            } catch (err) {
+                console.log("   ⚠️  Could not get GitHub credentials from gh CLI:", err.message);
+                console.log("   Tip: Run 'gh auth login' first to authenticate");
+            }
+        }
+
         // Webhook setup is now fully automatic (no prompt needed)
 
         // ─────────────────────────────────────────────────────────────
@@ -251,7 +291,11 @@ async function main() {
             repoName,
             repoFullName: repoResult.repoFullName,
             dockerHubUsername,
-            dockerHubPassword
+            dockerHubPassword,
+            isPrivate,
+            githubUsername,
+            githubToken,
+            branch: "master"
         });
 
         // ─────────────────────────────────────────────────────────────

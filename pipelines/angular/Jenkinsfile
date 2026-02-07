@@ -15,8 +15,6 @@ pipeline {
         buildDiscarder(logRotator(numToKeepStr: '10'))
         // Timeout after 30 minutes
         timeout(time: 30, unit: 'MINUTES')
-        // Add timestamps to console output
-        timestamps()
     }
 
     stages {

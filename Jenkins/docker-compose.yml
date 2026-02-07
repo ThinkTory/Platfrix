@@ -2,6 +2,7 @@ services:
   jenkins:
     build: .
     container_name: jenkins
+    user: root
     restart: unless-stopped
     ports:
       - "8080:8080"
