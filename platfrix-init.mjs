@@ -30,6 +30,8 @@ import {
     getJenkinsUrl as getLocalJenkinsUrl
 } from "./scripts/start-jenkins.mjs";
 import { setupJenkins } from "./scripts/setup-jenkins.mjs";
+import { setupNgrokAndWebhook } from "./scripts/setup-ngrok.mjs";
+import { getDockerHubCredentials, saveDockerHubCredentials, hasDockerHubCredentials } from "./scripts/config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -139,15 +141,45 @@ async function main() {
         let outputDir = await question(rl, `\n📁 Output directory (${process.cwd()}): `);
         outputDir = outputDir.trim() || process.cwd();
 
-        // Docker Hub credentials (optional)
+        // Docker Hub credentials (optional - saved after first entry)
         console.log("\n   🐳 Docker Hub credentials (for pushing images to Docker Hub)");
-        const setupDockerHub = await confirm(rl, "   Configure Docker Hub credentials?");
         let dockerHubUsername = "";
         let dockerHubPassword = "";
-        if (setupDockerHub) {
-            dockerHubUsername = (await question(rl, "   Docker Hub username: ")).trim();
-            dockerHubPassword = (await question(rl, "   Docker Hub password: ")).trim();
+
+        const savedCreds = getDockerHubCredentials();
+        if (savedCreds.username && savedCreds.password) {
+            console.log(`   ✅ Saved credentials found for: ${savedCreds.username}`);
+            const useSaved = await confirm(rl, "   Use saved Docker Hub credentials?");
+            if (useSaved) {
+                dockerHubUsername = savedCreds.username;
+                dockerHubPassword = savedCreds.password;
+            } else {
+                const updateCreds = await confirm(rl, "   Enter new credentials?");
+                if (updateCreds) {
+                    dockerHubUsername = (await question(rl, "   Docker Hub username: ")).trim();
+                    dockerHubPassword = (await question(rl, "   Docker Hub password: ")).trim();
+                    if (dockerHubUsername && dockerHubPassword) {
+                        saveDockerHubCredentials(dockerHubUsername, dockerHubPassword);
+                        console.log("   💾 Credentials saved for future use");
+                    }
+                }
+            }
+        } else {
+            const setupDockerHub = await confirm(rl, "   Configure Docker Hub credentials?");
+            if (setupDockerHub) {
+                dockerHubUsername = (await question(rl, "   Docker Hub username: ")).trim();
+                dockerHubPassword = (await question(rl, "   Docker Hub password: ")).trim();
+                if (dockerHubUsername && dockerHubPassword) {
+                    const saveCreds = await confirm(rl, "   Save credentials for future use?");
+                    if (saveCreds) {
+                        saveDockerHubCredentials(dockerHubUsername, dockerHubPassword);
+                        console.log("   💾 Credentials saved");
+                    }
+                }
+            }
         }
+
+        // Webhook setup is now fully automatic (no prompt needed)
 
         // ─────────────────────────────────────────────────────────────
         // Summary and confirmation
@@ -171,7 +203,7 @@ async function main() {
         // Step 2: Start Jenkins
         // ─────────────────────────────────────────────────────────────
         console.log("\n\n┌─────────────────────────────────────────────────────────┐");
-        console.log("│  STEP 1/4: Starting Jenkins                             │");
+        console.log("│  STEP 1/5: Starting Jenkins                             │");
         console.log("└─────────────────────────────────────────────────────────┘");
 
         const jenkinsResult = await startJenkins({ skipIfRunning: true });
@@ -186,7 +218,7 @@ async function main() {
         // Step 3: Create repository
         // ─────────────────────────────────────────────────────────────
         console.log("\n\n┌─────────────────────────────────────────────────────────┐");
-        console.log("│  STEP 2/4: Creating Angular Repository                  │");
+        console.log("│  STEP 2/5: Creating Angular Repository                  │");
         console.log("└─────────────────────────────────────────────────────────┘\n");
 
         const repoResult = await createAngularRepo({
@@ -200,7 +232,7 @@ async function main() {
         // Step 4: Copy Jenkinsfile
         // ─────────────────────────────────────────────────────────────
         console.log("\n\n┌─────────────────────────────────────────────────────────┐");
-        console.log("│  STEP 3/4: Adding Jenkins Pipeline                      │");
+        console.log("│  STEP 3/5: Adding Jenkins Pipeline                      │");
         console.log("└─────────────────────────────────────────────────────────┘");
 
         await copyPipeline({
@@ -212,7 +244,7 @@ async function main() {
         // Step 5: Configure Jenkins (credentials + pipeline job)
         // ─────────────────────────────────────────────────────────────
         console.log("\n\n┌─────────────────────────────────────────────────────────┐");
-        console.log("│  STEP 4/4: Configuring Jenkins                          │");
+        console.log("│  STEP 4/5: Configuring Jenkins                          │");
         console.log("└─────────────────────────────────────────────────────────┘");
 
         await setupJenkins({
@@ -220,6 +252,19 @@ async function main() {
             repoFullName: repoResult.repoFullName,
             dockerHubUsername,
             dockerHubPassword
+        });
+
+        // ─────────────────────────────────────────────────────────────
+        // Step 6: Setup ngrok and webhook (fully automatic)
+        // ─────────────────────────────────────────────────────────────
+        console.log("\n\n┌─────────────────────────────────────────────────────────┐");
+        console.log("│  STEP 5/5: Setting up GitHub Webhook                    │");
+        console.log("└─────────────────────────────────────────────────────────┘");
+
+        const webhookResult = await setupNgrokAndWebhook({
+            repoFullName: repoResult.repoFullName,
+            jenkinsPort: 8080,
+            rl  // Pass readline for auth token prompting if needed
         });
 
         // ─────────────────────────────────────────────────────────────
@@ -242,20 +287,19 @@ async function main() {
    ✅ Admin user: admin / admin
    ✅ Pipeline job "${repoName}" created
    ${dockerHubUsername ? "✅ Docker Hub credentials configured" : "⚠️  Docker Hub credentials not configured (optional)"}
-
-   ────────────────────────────────────────────────────────────
-   OPTIONAL - For Webhooks:
-   ────────────────────────────────────────────────────────────
-   • Install ngrok: https://ngrok.com
-   • Run: ngrok http 8080
-   • Add webhook in GitHub repo settings
+   ${webhookResult.success ? `✅ GitHub webhook configured (${webhookResult.ngrokUrl})` : "⚠️  GitHub webhook not configured (optional)"}
 
    ────────────────────────────────────────────────────────────
    START DEVELOPING:
       cd "${repoResult.localDir}"
       npm install
       npm start
-`);
+${webhookResult.success ? `
+   ────────────────────────────────────────────────────────────
+   NOTE: ngrok is running in the background.
+   Keep this terminal open or the webhook will stop working.
+   To stop ngrok: taskkill /F /IM ngrok.exe (Windows)
+` : ""}`);
 
     } catch (err) {
         console.error("\n❌ Error:", err.message);
