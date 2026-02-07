@@ -4,6 +4,8 @@
  * Configures Jenkins via REST API:
  * - Add credentials (Docker Hub, GitHub, etc.)
  * - Create pipeline jobs
+ * 
+ * Uses PowerShell WebSessions on Windows to preserve cookies for crumb validation
  */
 import { execSync } from "node:child_process";
 import path from "node:path";
@@ -32,45 +34,113 @@ function sleep(ms) {
 }
 
 /**
- * Make a Jenkins API request using curl
+ * Make a simple GET request using PowerShell
  */
-function jenkinsApi(endpoint, method = "GET", data = null, contentType = "application/json") {
+function httpGet(url) {
     const auth = Buffer.from(`${JENKINS_USER}:${JENKINS_PASSWORD}`).toString("base64");
-    let cmd = `curl -s -X ${method} "${JENKINS_URL}${endpoint}" -H "Authorization: Basic ${auth}"`;
+    const tempDir = process.env.TEMP || ".";
 
-    if (data) {
-        if (contentType === "application/xml") {
-            // Write XML to temp file to avoid escaping issues
-            const tempFile = path.join(process.env.TEMP || "/tmp", "jenkins-config.xml");
-            fs.writeFileSync(tempFile, data);
-            cmd += ` -H "Content-Type: ${contentType}" --data-binary "@${tempFile}"`;
-        } else {
-            cmd += ` -H "Content-Type: ${contentType}" -d "${data.replace(/"/g, '\\"')}"`;
+    if (process.platform === "win32") {
+        const script = `
+$headers = @{ "Authorization" = "Basic ${auth}" }
+try {
+    $response = Invoke-WebRequest -Uri "${url}" -Method GET -Headers $headers -UseBasicParsing
+    $response.Content
+} catch {
+    Write-Output ""
+}
+`;
+        const scriptFile = path.join(tempDir, "jenkins-get.ps1");
+        fs.writeFileSync(scriptFile, script);
+
+        try {
+            return run(`powershell -ExecutionPolicy Bypass -File "${scriptFile}"`, process.cwd(), true);
+        } catch {
+            return null;
         }
-    }
-
-    try {
-        return run(cmd, process.cwd(), true);
-    } catch (err) {
-        return null;
+    } else {
+        try {
+            return run(`curl -s "${url}" -H "Authorization: Basic ${auth}"`, process.cwd(), true);
+        } catch {
+            return null;
+        }
     }
 }
 
 /**
- * Get Jenkins crumb for CSRF protection
+ * Make a POST request with session and fresh crumb
+ * Uses WebSession to preserve cookies between crumb request and POST
  */
-function getCrumb() {
-    try {
-        const auth = Buffer.from(`${JENKINS_USER}:${JENKINS_PASSWORD}`).toString("base64");
-        const result = run(
-            `curl -s "${JENKINS_URL}/crumbIssuer/api/json" -H "Authorization: Basic ${auth}"`,
-            process.cwd(),
-            true
-        );
-        const json = JSON.parse(result);
-        return { field: json.crumbRequestField, value: json.crumb };
-    } catch {
-        return null;
+function httpPost(url, body, contentType = "application/xml") {
+    const auth = Buffer.from(`${JENKINS_USER}:${JENKINS_PASSWORD}`).toString("base64");
+    const tempDir = process.env.TEMP || ".";
+
+    if (process.platform === "win32") {
+        // Write body to temp file
+        const bodyFile = path.join(tempDir, "jenkins-body.txt");
+        fs.writeFileSync(bodyFile, body);
+
+        // Create PowerShell script that uses a WebSession to preserve cookies
+        const script = `
+$auth = "Basic ${auth}"
+
+# Create a session to preserve cookies (required for crumb validation)
+$session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+
+# Get fresh crumb with session
+try {
+    $crumbResponse = Invoke-WebRequest -Uri "${JENKINS_URL}/crumbIssuer/api/json" -Headers @{Authorization=$auth} -WebSession $session -UseBasicParsing
+    $crumbData = $crumbResponse.Content | ConvertFrom-Json
+} catch {
+    Write-Error "Failed to get crumb: $_"
+    exit 1
+}
+
+# Build headers with crumb
+$headers = @{
+    "Authorization" = $auth
+    "Content-Type" = "${contentType}"
+}
+$headers[$crumbData.crumbRequestField] = $crumbData.crumb
+
+# Read body and make POST request with same session
+$body = Get-Content -Path "${bodyFile}" -Raw -Encoding UTF8
+try {
+    $response = Invoke-WebRequest -Uri "${url}" -Method POST -Headers $headers -Body $body -WebSession $session -UseBasicParsing
+    Write-Output "SUCCESS"
+} catch {
+    Write-Error "POST failed: $_"
+    exit 1
+}
+`;
+        const scriptFile = path.join(tempDir, "jenkins-post.ps1");
+        fs.writeFileSync(scriptFile, script);
+
+        try {
+            const result = run(`powershell -ExecutionPolicy Bypass -File "${scriptFile}"`, process.cwd(), true);
+            return result && result.includes("SUCCESS");
+        } catch (err) {
+            return false;
+        }
+    } else {
+        // Use curl on Linux/Mac with cookie jar
+        try {
+            const cookieFile = "/tmp/jenkins-cookies.txt";
+
+            // Get crumb with cookies
+            const crumbResult = run(`curl -s -c ${cookieFile} "${JENKINS_URL}/crumbIssuer/api/json" -H "Authorization: Basic ${auth}"`, process.cwd(), true);
+            const crumbData = JSON.parse(crumbResult);
+
+            // Write body to file
+            const tempFile = "/tmp/jenkins-body.txt";
+            fs.writeFileSync(tempFile, body);
+
+            // Make POST with cookies
+            run(`curl -s -b ${cookieFile} -X POST "${url}" -H "Authorization: Basic ${auth}" -H "Content-Type: ${contentType}" -H "${crumbData.crumbRequestField}: ${crumbData.crumb}" --data-binary "@${tempFile}"`, process.cwd(), true);
+            return true;
+        } catch {
+            return false;
+        }
     }
 }
 
@@ -79,7 +149,7 @@ function getCrumb() {
  */
 export async function checkJenkinsApi() {
     try {
-        const result = jenkinsApi("/api/json");
+        const result = httpGet(`${JENKINS_URL}/api/json`);
         return result && result.includes("mode");
     } catch {
         return false;
@@ -92,12 +162,6 @@ export async function checkJenkinsApi() {
 export function addCredential(credentialId, username, password, description = "") {
     console.log(`   Adding credential: ${credentialId}`);
 
-    const crumb = getCrumb();
-    if (!crumb) {
-        console.log("   ⚠️  Could not get Jenkins crumb token");
-        return false;
-    }
-
     const credentialXml = `
 <com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl>
   <scope>GLOBAL</scope>
@@ -108,45 +172,31 @@ export function addCredential(credentialId, username, password, description = ""
 </com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl>
 `.trim();
 
-    const auth = Buffer.from(`${JENKINS_USER}:${JENKINS_PASSWORD}`).toString("base64");
-    const tempFile = path.join(process.env.TEMP || "/tmp", "jenkins-cred.xml");
-    fs.writeFileSync(tempFile, credentialXml);
+    const success = httpPost(
+        `${JENKINS_URL}/credentials/store/system/domain/_/createCredentials`,
+        credentialXml,
+        "application/xml"
+    );
 
-    try {
-        run(
-            `curl -s -X POST "${JENKINS_URL}/credentials/store/system/domain/_/createCredentials" ` +
-            `-H "Authorization: Basic ${auth}" ` +
-            `-H "${crumb.field}: ${crumb.value}" ` +
-            `-H "Content-Type: application/xml" ` +
-            `--data-binary "@${tempFile}"`,
-            process.cwd(),
-            true
-        );
+    if (success) {
         console.log(`   ✅ Credential "${credentialId}" added`);
-        return true;
-    } catch (err) {
-        console.log(`   ❌ Failed to add credential: ${err.message}`);
-        return false;
+    } else {
+        console.log(`   ❌ Failed to add credential`);
     }
+    return success;
 }
 
 /**
  * Create a pipeline job in Jenkins
  */
-export function createPipelineJob(jobName, githubRepoUrl, jenkinsfilePath = "Jenkinsfile") {
+export function createPipelineJob(jobName, githubRepoUrl, branch = "master", jenkinsfilePath = "Jenkinsfile") {
     console.log(`   Creating pipeline job: ${jobName}`);
 
     // Check if job already exists
-    const exists = jenkinsApi(`/job/${encodeURIComponent(jobName)}/api/json`);
+    const exists = httpGet(`${JENKINS_URL}/job/${encodeURIComponent(jobName)}/api/json`);
     if (exists && exists.includes("fullName")) {
         console.log(`   ⚠️  Job "${jobName}" already exists, skipping`);
         return true;
-    }
-
-    const crumb = getCrumb();
-    if (!crumb) {
-        console.log("   ⚠️  Could not get Jenkins crumb token");
-        return false;
     }
 
     const jobConfigXml = `<?xml version='1.1' encoding='UTF-8'?>
@@ -169,7 +219,7 @@ export function createPipelineJob(jobName, githubRepoUrl, jenkinsfilePath = "Jen
       </userRemoteConfigs>
       <branches>
         <hudson.plugins.git.BranchSpec>
-          <name>*/main</name>
+          <name>*/${branch}</name>
         </hudson.plugins.git.BranchSpec>
       </branches>
       <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
@@ -187,33 +237,25 @@ export function createPipelineJob(jobName, githubRepoUrl, jenkinsfilePath = "Jen
   <disabled>false</disabled>
 </flow-definition>`;
 
-    const auth = Buffer.from(`${JENKINS_USER}:${JENKINS_PASSWORD}`).toString("base64");
-    const tempFile = path.join(process.env.TEMP || "/tmp", "jenkins-job.xml");
-    fs.writeFileSync(tempFile, jobConfigXml);
+    const success = httpPost(
+        `${JENKINS_URL}/createItem?name=${encodeURIComponent(jobName)}`,
+        jobConfigXml,
+        "application/xml"
+    );
 
-    try {
-        run(
-            `curl -s -X POST "${JENKINS_URL}/createItem?name=${encodeURIComponent(jobName)}" ` +
-            `-H "Authorization: Basic ${auth}" ` +
-            `-H "${crumb.field}: ${crumb.value}" ` +
-            `-H "Content-Type: application/xml" ` +
-            `--data-binary "@${tempFile}"`,
-            process.cwd(),
-            true
-        );
+    if (success) {
         console.log(`   ✅ Pipeline job "${jobName}" created`);
-        return true;
-    } catch (err) {
-        console.log(`   ❌ Failed to create job: ${err.message}`);
-        return false;
+    } else {
+        console.log(`   ❌ Failed to create job`);
     }
+    return success;
 }
 
 /**
  * Main setup function called by orchestrator
  */
 export async function setupJenkins(options = {}) {
-    const { repoName, repoFullName, dockerHubUsername, dockerHubPassword } = options;
+    const { repoName, repoFullName, dockerHubUsername, dockerHubPassword, branch = "master" } = options;
 
     console.log("\n🔧 Configuring Jenkins...");
 
@@ -247,7 +289,7 @@ export async function setupJenkins(options = {}) {
     // Create pipeline job
     if (repoName && repoFullName) {
         const githubUrl = `https://github.com/${repoFullName}`;
-        createPipelineJob(repoName, githubUrl);
+        createPipelineJob(repoName, githubUrl, branch);
     }
 
     console.log("   ✅ Jenkins configuration complete\n");
@@ -272,12 +314,14 @@ if (isMainModule) {
 
         const repoName = await question(rl, "Repository name (for job): ");
         const repoFullName = await question(rl, "GitHub repo (owner/name): ");
+        const branch = await question(rl, "Branch (default: master): ") || "master";
         const dockerUser = await question(rl, "Docker Hub username (or press Enter to skip): ");
         const dockerPass = dockerUser ? await question(rl, "Docker Hub password: ") : "";
 
         await setupJenkins({
             repoName,
             repoFullName,
+            branch,
             dockerHubUsername: dockerUser,
             dockerHubPassword: dockerPass
         });
