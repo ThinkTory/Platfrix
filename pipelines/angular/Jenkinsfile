@@ -1,0 +1,79 @@
+pipeline {
+    agent any
+
+    environment {
+        // Docker Hub credentials - configure in Jenkins Credentials
+        DOCKER_HUB_CREDS = credentials('docker-hub-credentials')
+        // Dynamic image name based on job name
+        DOCKER_IMAGE = "${DOCKER_HUB_CREDS_USR}/${env.JOB_NAME.toLowerCase()}"
+        // Build tag
+        BUILD_TAG = "${env.BUILD_NUMBER}"
+    }
+
+    options {
+        // Discard old builds
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        // Timeout after 30 minutes
+        timeout(time: 30, unit: 'MINUTES')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                echo '📥 Checking out source code...'
+                checkout scm
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                echo '📦 Installing npm dependencies...'
+                sh 'npm ci'
+            }
+        }
+
+        stage('Build Application') {
+            steps {
+                echo '🔨 Building Angular application...'
+                sh 'npm run build -- --configuration=production'
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                echo '🐳 Building Docker image...'
+                sh """
+                    docker build -t ${DOCKER_IMAGE}:${BUILD_TAG} .
+                    docker tag ${DOCKER_IMAGE}:${BUILD_TAG} ${DOCKER_IMAGE}:latest
+                """
+            }
+        }
+
+        stage('Push to Docker Hub') {
+            steps {
+                echo '📤 Pushing to Docker Hub...'
+                sh """
+                    echo \${DOCKER_HUB_CREDS_PSW} | docker login -u \${DOCKER_HUB_CREDS_USR} --password-stdin
+                    docker push ${DOCKER_IMAGE}:${BUILD_TAG}
+                    docker push ${DOCKER_IMAGE}:latest
+                """
+            }
+        }
+    }
+
+    post {
+        always {
+            echo '🧹 Cleaning up...'
+            sh 'docker logout || true'
+            // Clean up Docker images to save space
+            sh "docker rmi ${DOCKER_IMAGE}:${BUILD_TAG} || true"
+            sh "docker rmi ${DOCKER_IMAGE}:latest || true"
+        }
+        success {
+            echo '✅ Pipeline completed successfully!'
+        }
+        failure {
+            echo '❌ Pipeline failed!'
+        }
+    }
+}

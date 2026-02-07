@@ -1,0 +1,29 @@
+# Jenkins plugins for Angular CI/CD pipeline
+# Install with: jenkins-plugin-cli --plugins < plugins.txt
+
+# Core pipeline support
+workflow-aggregator
+pipeline-stage-view
+
+# Git integration
+git
+github
+github-branch-source
+
+# Docker support
+docker-workflow
+docker-plugin
+
+# Credentials management
+credentials
+credentials-binding
+
+# Build tools
+nodejs
+
+# Configuration as Code
+configuration-as-code
+
+# Notifications (optional)
+slack
+
